@@ -1,0 +1,3 @@
+1. pairing시 데이터 통신이 되어야지만 paird로 전환
+2. request시 no response 발생시 최대 횟수 체크후 자체 repairing 실행 루틴 추가
+3. total looptime을 500ms 이내로 변경

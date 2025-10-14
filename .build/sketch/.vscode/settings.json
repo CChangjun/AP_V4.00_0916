@@ -1,0 +1,17 @@
+#line 1 "C:\\개인폴더\\FirmWare\\무선화FW\\TEST\\revisionBoard\\AP_ver3.31_PEERLED추가TEST\\ApToEthercat_V3.31_20251014\\.vscode\\settings.json"
+{
+    "files.associations": {
+        "*.json": "cpp",
+        "*.ino": "cpp",
+        "*.h": "cpp",
+        "*.tcc": "cpp",
+        "algorithm": "cpp",
+        "utility": "cpp",
+        "array": "cpp",
+        "functional": "cpp",
+        "random": "cpp",
+        "istream": "cpp",
+        "streambuf": "cpp"
+    },
+    "C_Cpp.errorSquiggles": "disabled"
+}
