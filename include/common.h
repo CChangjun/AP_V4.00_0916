@@ -1,11 +1,15 @@
 #ifndef _COMMON_H_
 #define _COMMON_H_
 
+#include <Arduino.h>
+
 #define DEBUG_MSG_WIFI      1
 #define DEBUG_MSG_ECAT      1
 
 
-static uint16_t crc_16_table[] = {
+// CRC lookup table은 common.cpp 한 곳에서만 실체화하여 C++ translation unit별 복제를 막는다.
+#ifdef COMMON_CRC_TABLE_IMPLEMENTATION
+static const uint16_t crc_16_table[] = {
     0x0000, 0xc0c1, 0xc181, 0x0140, 0xc301, 0x03c0, 0x0280, 0xc241,
     0xc601, 0x06c0, 0x0780, 0xc741, 0x0500, 0xc5c1, 0xc481, 0x0440,
     0xcc01, 0x0cc0, 0x0d80, 0xcd41, 0x0f00, 0xcfc1, 0xce81, 0x0e40,
@@ -39,6 +43,7 @@ static uint16_t crc_16_table[] = {
     0x4400, 0x84c1, 0x8581, 0x4540, 0x8701, 0x47c0, 0x4680, 0x8641,
     0x8201, 0x42c0, 0x4380, 0x8341, 0x4100, 0x81c1, 0x8081, 0x4040
 };
+#endif
 
 #define CRC16_MODBUS_INIT_CODE	0xFFFF	
 
@@ -59,8 +64,12 @@ typedef struct _word_big_endian_t
 } word_big_endian_t;
 
 ///////////////////////////////////////////////////////////////////////////
+#ifndef LOW
 #define LOW         0
+#endif
+#ifndef HIGH
 #define HIGH        1
+#endif
 
 
 void output_toggle( uint8_t PIN );

@@ -1,4 +1,4 @@
-
+#define COMMON_CRC_TABLE_IMPLEMENTATION
 #include "common.h"
 
 void output_toggle( uint8_t PIN )

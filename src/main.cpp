@@ -34,6 +34,7 @@ del_peer(channel); 순서로 들어가는데,
  *
  */
 
+#include <Arduino.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include "esp_wifi.h"
@@ -53,7 +54,7 @@ EasyCAT EASYCAT(SS);
 // _TIMERINTERRUPT_LOGLEVEL_ from 0 to 4
 #define _TIMERINTERRUPT_LOGLEVEL_ 4
 #define TIMER0_INTERVAL_MS 1
-// To be included only in main(), .ino with setup() to avoid `Multiple Definitions` Linker Error
+// main.cpp 한 곳에서만 include하여 `Multiple Definitions` Linker Error를 방지한다.
 #include "ESP32TimerInterrupt.h"
 /////////////////////////////////////////////////////////////////////////////////
 #include "common.h"

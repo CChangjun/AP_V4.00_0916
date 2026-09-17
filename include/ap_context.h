@@ -4,8 +4,8 @@
 #include <atomic>
 #include "ap_types.h"
 
-// wifi_state_machine_t, wifi_send_t는 main.ino의 기존 typedef를 그대로 재사용할 예정.. 1차 수정때는 페스 
-// 그래서 이 파일은 선언ㄴ만 담고, 실제 typedef 정의는 기존 main.ino 위치를 유지해도 ok..?
+// Wi-Fi runtime type은 ap_wifi_runtime.h에서 관리한다.
+// 이 파일은 AP 공용 context와 전역 context 선언만 제공한다.
 
 typedef struct _ap_peer_ctx_t
 {

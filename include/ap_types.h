@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-// main.ino에 있던 MAX 계열 상수는 우선 여기로 모d앗음 
+// 기존 main.cpp의 MAX 계열 상수를 공통 type header에서 관리한다.
 #define MAX_PEER 16             // IO/serial peer를 포함한 전체 peer channel 수.
 #define MAX_IO_BUFF 4           // PLC/AP 데이터 교환에 사용하는 IO buffer 수.
 #define MAX_SERIAL_BUFF 70      // Serial 데이터 buffer word 수.
