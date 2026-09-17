@@ -20,8 +20,8 @@
 //* 위 pending도 완전한 해결책은 아닌듯? event를 남기기전에 cb에서 cache 직접 변경한느 
  
 #define TEMP_QUEUE_GLOBAL_PEER_REQ_GATE 0   
-// 0: V3.31 호환 방향. 전역 peer_req를 다음 송신의 Gate로 사용하지 않음.
-// 1: AP 전체에서 한 번에 하나의 request만 응답/timeout 완료까지 허용.
+// 0: V3.31 호환 방향. 다른 채널의 활성 request를 다음 송신의 Gate로 사용하지 않음.
+// 1: 채널별 상태는 유지하되 AP 전체에서 한 번에 하나의 request만 응답/timeout 완료까지 허용.
 
 #define TEMP_SERIAL_PAIRBIT_AUTO_GET 1      //! TEMP: 0=disable paired serial pairing_bit auto GET, 1=current auto GET.
 

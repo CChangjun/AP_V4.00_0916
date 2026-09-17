@@ -122,6 +122,105 @@ void Wifi_Handle(void);
 static void Wifi_Rx_ProcessFrame(const wifi_rx_frame_t &rx_frame);
 static void Wifi_Rx_Service(void);
 
+static uint16_t Wifi_Request_Timeout_Limit(uint8_t request_cmd)
+{
+    switch (request_cmd)
+    {
+    case AP_PAIRING_REQ:
+    case AP_PAIRING_CANCEL:
+        return SET_TIME_PAIRING;
+
+    case AP_SERIAL_SET:
+    case AP_SERIAL_GET:
+#if TEMP_SERIAL_TIMEOUT_EXTEND == 1
+        return TEMP_SERIAL_SET_TIME_PAIRD;
+#else
+        return SET_TIME_PAIRD;
+#endif
+
+    default:
+        return SET_TIME_PAIRD;
+    }
+}
+
+static void Wifi_Request_Timeout_Clear(uint8_t channel)
+{
+    if (channel >= MAX_PEER) return;
+
+    wifi_send.request_timeout[channel].active = false;
+    wifi_send.request_timeout[channel].count = 0;
+    wifi_send.request_timeout[channel].limit = 0;
+}
+
+static void Wifi_Request_Timeout_Start(uint8_t channel, uint8_t request_cmd)
+{
+    if (channel >= MAX_PEER) return;
+
+    wifi_send.request_timeout[channel].count = 0;
+    wifi_send.request_timeout[channel].limit = Wifi_Request_Timeout_Limit(request_cmd);
+    wifi_send.request_timeout[channel].active = true;
+}
+
+#if TEMP_QUEUE_GLOBAL_PEER_REQ_GATE == 1
+static bool Wifi_Request_Any_Active(void)
+{
+    for (uint8_t channel = 0; channel < MAX_PEER; ++channel)
+    {
+        if (wifi_send.request_timeout[channel].active) return true;
+    }
+    return false;
+}
+#endif
+
+static bool Wifi_Request_Response_Pending(uint8_t channel)
+{
+    if (channel >= MAX_PEER) return false;
+
+    return g_rx_event[channel].pending ||
+           wifi_state_machine[channel].pairing.response ||
+           wifi_state_machine[channel].peer.response;
+}
+
+static int8_t Wifi_Request_Timeout_Service(void)
+{
+    static uint8_t next_expired_channel = 0;
+
+    // 모든 활성 request의 count를 같은 service 주기에서 함께 진행한다.
+    // RX frame은 이 함수보다 먼저 처리되므로, 정상 응답 flag가 있으면 timeout보다 응답을 우선한다.
+    for (uint8_t channel = 0; channel < MAX_PEER; ++channel)
+    {
+        wifi_request_timeout_t &request = wifi_send.request_timeout[channel];
+        if (!request.active) continue;
+
+        if (Wifi_Request_Response_Pending(channel))
+        {
+            // 응답은 도착했지만 해당 채널의 상태 전이가 아직 남아 있다.
+            // timeout count만 정지하고, 실제 response 처리 지점에서 request를 종료한다.
+            continue;
+        }
+
+        if (request.count < 0xFFFFu) request.count++;
+    }
+
+    // 여러 채널이 같은 주기에 만료되어도 기존 flow의 상태 변경량을 유지하기 위해
+    // 한 번의 Wifi_Handle()에서는 한 채널만 처리하고, 다음 채널부터 공정하게 이어간다.
+    for (uint8_t offset = 0; offset < MAX_PEER; ++offset)
+    {
+        const uint8_t channel = (uint8_t)((next_expired_channel + offset) % MAX_PEER);
+        wifi_request_timeout_t &request = wifi_send.request_timeout[channel];
+
+        if (request.active && (request.count > request.limit))
+        {
+            request.active = false;
+            request.count = 0;
+            next_expired_channel = (uint8_t)((channel + 1u) % MAX_PEER);
+            return (int8_t)channel;
+        }
+    }
+
+    return -1;
+}
+
 
 #if PLC_RSSI
 
@@ -311,6 +410,7 @@ void del_peer(uint8_t index)
     wifi_rx_peer_invalidate(index);
     wifi_send.tx_busy[index] = false;
     wifi_send.rx_busy[index] = false;
+    Wifi_Request_Timeout_Clear(index);
 
 #if FUNC_REPAIRD_AUTO == 1
     if (g_ap.peer.peer[index].pairFlag)
@@ -1536,6 +1636,7 @@ void Wifi_Peer_Data_Set(uint8_t channel, uint8_t cmd, uint16_t *tx_data, uint8_t
 
     // 다음 request packet을 만들기 시작하면 이전 request의 대기 frame은 더 이상 유효하지 않다.
     wifi_rx_transaction_abort(channel);
+    Wifi_Request_Timeout_Clear(channel);
 
     const uint16_t payload_len = (uint16_t)wlen * 2u;
     const uint16_t tx_len_u16 = (uint16_t)(8u + payload_len);
@@ -1592,6 +1693,7 @@ void Wifi_Peer_State_Set(WIFI_STATE_MACHINE state, uint8_t channel, uint8_t cmd,
 
     // Pairing add/cancel 재시도도 새로운 request로 취급한다.
     wifi_rx_transaction_abort(channel);
+    Wifi_Request_Timeout_Clear(channel);
     // header8 + crc2, payload 없음
     const uint16_t tx_len_u16 = 8u;
 
@@ -1685,13 +1787,89 @@ void Wifi_Peer_Rotation(void)
 #endif
 }
 
+static void Wifi_Request_Timeout_Handle(uint8_t channel)
+{
+    if (channel >= MAX_PEER) return;
+
+    //!260917부 수정完...CJL : 전역 request flag가 아니라 실제 만료된 채널에 timeout 후속 처리를 귀속함.
+    Wifi_Request_Timeout_Clear(channel);
+    wifi_send.tx_busy[channel] = false;
+
+#if RF_TEST_SERIAL_LOG == 1
+    g_rf_timeout_total[channel]++;
+#endif
+
+#if TEMP_CLEAR_RX_BUSY_ON_REQ_TIMEOUT == 1
+    wifi_rx_transaction_abort(channel);
+    wifi_send.rx_busy[channel] = false;
+#endif
+
+    if (++wifi_state_machine[channel].peer.cnt_disconnect >= SETUP_DISCONNECT_MAX)
+    {
+        // 기존 정책 유지: 연속 timeout 한계에 도달했을 때만 늦은 응답 대기를 강제로 닫는다.
+        wifi_state_machine[channel].peer.cnt_disconnect = 0;
+        wifi_send.rx_busy[channel] = false;
+
+#if RF_TEST_SERIAL_LOG == 1
+        g_rf_disconnect_total[channel]++;
+        g_rf_last_disconnect_ms[channel] = millis();
+#endif
+
+        if (g_ap.peer.peer[channel].pairFlag)
+        {
+            del_peer(channel);
+        }
+
+#if FUNC_REPAIRD_AUTO == 1
+        if (g_ap.peer.peer_bak[channel].repair_itself == false)
+        {
+            memset(&wifi_state_machine[channel], 0, sizeof(wifi_state_machine[channel]));
+        }
+#else
+        memset(&wifi_state_machine[channel], 0, sizeof(wifi_state_machine[channel]));
+#endif
+
+#if DEBUG_SERIAL_MONITOR == 1
+        Serial.printf("[MSG]WIFI::HANDLE[%d]::TIME OUT::Del Peer!!!!\r\n", channel);
+#endif
+
+        if (g_ap.peer.peer_debug[channel].del_cnt < 0xffffffff)
+        {
+            g_ap.peer.peer_debug[channel].del_cnt++;
+        }
+    }
+    else
+    {
+        if (g_ap.peer.peer[channel].pairFlag == true)
+        {
+#if DEBUG_SERIAL_MONITOR == 1
+            Serial.printf("[MSG]WIFI::HANDLE[%d]::TIME OUT::Disconnet Counter=%d\r\n", channel, wifi_state_machine[channel].peer.cnt_disconnect);
+#endif
+            g_ap.peer.peer_bak[channel].receiveLoss_cnt++;
+            wifi_state_machine[channel].peer.state = WIFI_STATE_PAIRED;
+        }
+        else
+        {
+            // pairing 요청 timeout은 기존처럼 즉시 transaction/rx_busy를 닫고 초기 상태로 복귀한다.
+            wifi_rx_transaction_abort(channel);
+            wifi_send.rx_busy[channel] = false;
+            memset(&wifi_state_machine[channel], 0, sizeof(wifi_state_machine[channel]));
+
+#if DEBUG_SERIAL_MONITOR == 1
+            Serial.printf("[MSG]WIFI::HANDLE[%d]::Wait Pairing\r\n", channel);
+#endif
+        }
+    }
+}
+
 void Wifi_Handle(void)
 {
     // ESP-NOW 송신 상태 machine 함수. 
     // Ethercat_Handle()가 세운 update_io/update_serial/request_serial/pairing flag를 소비하고,
     // Core 1 RX frame worker가 남긴 response event를 받아 request 종료 및 상태 전이를 처리한다.
-    static uint16_t cnt_loop = 0;                  // 현재 request timeout counter.
-    static uint16_t setTime = SET_TIME_PAIRING;    // pairing/paired request에 적용되는 현재 timeout 기준값.
+    // 기존 round-robin/상태 정리 cadence는 유지한다. Request timeout 자체는 채널별 request_timeout[]이 담당한다.
+    static uint16_t cnt_loop = 0;
+    static uint16_t setTime = SET_TIME_PAIRING;
 
     uint8_t channel = wifi_send.peer_addr;
     uint8_t getAddr = 0;
@@ -1908,7 +2086,7 @@ void Wifi_Handle(void)
 
     if (wifi_queue_peek(&wifi_send.queue, &getAddr) &&
 #if TEMP_QUEUE_GLOBAL_PEER_REQ_GATE == 1
-        !wifi_send.peer_req &&
+        !Wifi_Request_Any_Active() &&
 #endif
         !wifi_send.tx_busy[getAddr] &&
         !wifi_send.rx_busy[getAddr])
@@ -1916,9 +2094,9 @@ void Wifi_Handle(void)
     {
         // 공통 송신 구간이다.
 #if TEMP_QUEUE_GLOBAL_PEER_REQ_GATE == 1
-        // peer_req가 false일 때만 새 request를 꺼내므로 현재 구조는 AP 전체에서 한 번에 하나만 송신 대기한다.
+        // 어느 채널에도 활성 request가 없을 때만 새 request를 꺼내 AP 전체 한 건 정책을 적용한다.
 #else
-        // legacy-like test: target channel이 busy가 아니면 전역 peer_req와 무관하게 queue request를 꺼낸다.
+        // V3.31 호환 방향: target channel이 busy가 아니면 다른 채널의 응답 대기와 무관하게 전송한다.
 #endif
         channel = getAddr;
         wifi_queue_dequeue(&wifi_send.queue);
@@ -1950,7 +2128,7 @@ void Wifi_Handle(void)
             // 송신 API 호출은 성공했다. 이제 이 채널의 응답을 기다리는 상태로 전환한다.
             wifi_send.tx_busy[channel] = false;
             wifi_send.rx_busy[channel] = true;
-            wifi_send.peer_req = true;
+            Wifi_Request_Timeout_Start(channel, wifi_state_machine[channel].peer.txBuf[WIFI_PACKET_COMMAND]);
 #if DEBUG_SERIAL_MONITOR == 1
             Serial.printf("[MSG]WIFI::HANDLE[%d]::REQUEST SEND::Channel=0x%02x, Command=0x%02x, Type=0x%02x, Addr=0x%02x\r\n", channel, wifi_state_machine[channel].peer.txBuf[1], wifi_state_machine[channel].peer.txBuf[2], wifi_state_machine[channel].peer.txBuf[3], wifi_state_machine[channel].peer.txBuf[4]);
 #endif
@@ -1970,7 +2148,7 @@ void Wifi_Handle(void)
             wifi_rx_transaction_abort(channel);
             wifi_send.tx_busy[channel] = false;
             wifi_send.rx_busy[channel] = false;
-            wifi_send.peer_req = false;
+            Wifi_Request_Timeout_Clear(channel);
             break;
 
         default:
@@ -1984,7 +2162,7 @@ void Wifi_Handle(void)
             wifi_rx_transaction_abort(channel);
             wifi_send.tx_busy[channel] = false;
             wifi_send.rx_busy[channel] = false;
-            wifi_send.peer_req = false;
+            Wifi_Request_Timeout_Clear(channel);
 #if DEBUG_SERIAL_WIFI == 1
             Serial.printf("[MSG]WIFI::HANDLE[%d]::SEND ERR=%d\r\n", channel, err);
 #endif
@@ -2030,7 +2208,7 @@ void Wifi_Handle(void)
         if (wifi_state_machine[channel].pairing.response)
         {
             // pairing 계열 응답을 받았으므로 현재 request cycle을 종료한다.
-            wifi_send.peer_req = false;
+            Wifi_Request_Timeout_Clear(channel);
             wifi_state_machine[channel].pairing.response = false;
             wifi_state_machine[channel].pairing.request = false;
             wifi_send.rx_busy[channel] = false;
@@ -2148,7 +2326,7 @@ void Wifi_Handle(void)
         wifi_state_machine[channel].peer.response = false;
         wifi_state_machine[channel].peer.cnt_disconnect = 0;
         wifi_send.rx_busy[channel] = false;
-        wifi_send.peer_req = false;
+        Wifi_Request_Timeout_Clear(channel);
 
         if (wifi_state_machine[channel].peer.response_type_serial)
         {
@@ -2191,99 +2369,35 @@ void Wifi_Handle(void)
 #endif
     }
 
-    if (++cnt_loop > setTime) // 60ms, 60 * 16 = 960ms : this is 16 device scan loop time
+    const int8_t expired_channel = Wifi_Request_Timeout_Service();
+    if (expired_channel >= 0)
     {
-        // 현재 채널 기준 request timeout 처리 구간이다.
-        // 응답이 정상적으로 오면 save_response/pairing.response에서 peer_req가 먼저 내려간다.
+        Wifi_Request_Timeout_Handle((uint8_t)expired_channel);
+    }
+
+    bool rotation_due = (++cnt_loop > setTime);
+    if ((expired_channel >= 0) && ((uint8_t)expired_channel == wifi_send.peer_addr))
+    {
+        // 기존 동작처럼 현재 선택 채널의 request timeout은 다음 peer로 순회한다.
+        // 다른 채널의 timeout 때문에 현재 순서를 불필요하게 건너뛰지는 않는다.
+        rotation_due = true;
+    }
+
+    if (rotation_due) // 기존 peer 순회/idle 상태 정리 cadence 유지
+    {
         cnt_loop = 0;
         wifi_send.tx_busy[channel] = false;
 
-        // Send timeout
-        if (wifi_send.peer_req) //응답이 없어서 flag가 살아 있다면
-        {
-            // 송신은 성공했지만 제한 시간 안에 peer의 응답 event가 오지 않은 경우
-            // request를 닫고 disconnect counter를 증가시킨다.
-#if RF_TEST_SERIAL_LOG == 1
-            if (channel < MAX_PEER)
-            {
-                g_rf_timeout_total[channel]++;
-            }
-#endif
-            wifi_send.peer_req = false;
-#if TEMP_CLEAR_RX_BUSY_ON_REQ_TIMEOUT == 1
-            wifi_rx_transaction_abort(channel);
-            wifi_send.rx_busy[channel] = false; //! 기존; 최대 timeout 조건에 있던 것을 request timeout 종료 시 해당 채널 응답 대기도 같이 해제로 변경
-#endif
-            if (++wifi_state_machine[channel].peer.cnt_disconnect >= SETUP_DISCONNECT_MAX) // Disconnect Retry Time!!!!!!!!!!!!
-            {
-                // 강제 del
-                wifi_state_machine[channel].peer.cnt_disconnect = 0;
-                wifi_send.rx_busy[channel] = false; //!기존 위치
-
-#if RF_TEST_SERIAL_LOG == 1
-                if (channel < MAX_PEER)
-                {
-                    g_rf_disconnect_total[channel]++;
-                    g_rf_last_disconnect_ms[channel] = millis();
-                }
-#endif
-
-                if (g_ap.peer.peer[channel].pairFlag)
-                {
-                    // paired peer가 연속 timeout 한계에 도달하면 강제 삭제한다.
-                    del_peer(channel);
-                }
-
-#if FUNC_REPAIRD_AUTO == 1
-                if (g_ap.peer.peer_bak[channel].repair_itself == false)
-                {
-                    memset(&wifi_state_machine[channel], 0, sizeof(wifi_state_machine[channel]));
-                }
-
-#else
-                memset(&wifi_state_machine[channel], 0, sizeof(wifi_state_machine[channel]));
-#endif
-
-#if DEBUG_SERIAL_MONITOR == 1
-                Serial.printf("[MSG]WIFI::HANDLE[%d]::TIME OUT::Del Peer!!!!\r\n", channel);
-#endif
-
-                if (g_ap.peer.peer_debug[channel].del_cnt < 0xffffffff)
-                {
-                    g_ap.peer.peer_debug[channel].del_cnt++;
-                }
-            }
-            else
-            {
-                // 페어드는 페어드 상태로
-                if (g_ap.peer.peer[channel].pairFlag == true)
-                {
-#if DEBUG_SERIAL_MONITOR == 1
-                    Serial.printf("[MSG]WIFI::HANDLE[%d]::TIME OUT::Disconnet Counter=%d\r\n", channel, wifi_state_machine[channel].peer.cnt_disconnect);
-#endif
-                    g_ap.peer.peer_bak[channel].receiveLoss_cnt++;
-                    wifi_state_machine[channel].peer.state = WIFI_STATE_PAIRED;
-                }
-                else
-                {
-                    // 페어링 요청중이면 초기 상태로
-                    wifi_rx_transaction_abort(channel);
-                    wifi_send.rx_busy[channel] = false;
-                    memset(&wifi_state_machine[channel], 0, sizeof(wifi_state_machine[channel]));
-
-#if DEBUG_SERIAL_MONITOR == 1
-                    Serial.printf("[MSG]WIFI::HANDLE[%d]::Wait Pairing\r\n", channel);
-#endif
-                }
-            }
-        }
-        else
+        // 활성 request는 채널별 timeout service가 담당한다. 여기서는 기존의
+        // 요청 없음 상태 정리만 수행하며, 같은 call에서 timeout 처리한 채널은 중복 정리하지 않는다.
+        if ((expired_channel < 0) &&
+            !wifi_send.request_timeout[channel].active)
         {
             if (g_ap.peer.peer[channel].pairFlag == true) // 요청 상태 없이 타임아웃되었을 경우
             {
                 if (wifi_state_machine[channel].pairing.del)
                 {
-                    // 삭제 상태(pairing.del)는 남아 있지만 현재 응답 대기(peer_req)는 아닌 경우.
+                    // 삭제 상태(pairing.del)는 남아 있지만 현재 응답 대기는 아닌 경우.
                     // 송신 실패, queue/상태 꼬임, 또는 비정상 응답 처리 후 남은 삭제 상태를 정리 및 peer 삭제...
                     wifi_rx_transaction_abort(channel);
                     wifi_send.rx_busy[channel] = false;
@@ -2351,6 +2465,7 @@ void Wifi_Handle(void)
                         PairMask_Set(channel, false);
                         wifi_send.tx_busy[channel] = false;
                         wifi_send.rx_busy[channel] = false;
+                        Wifi_Request_Timeout_Clear(channel);
                         wifi_rx_peer_invalidate(channel);
                         memset(&g_rx_event[channel], 0, sizeof(g_rx_event[channel]));
                         memset(&wifi_state_machine[channel], 0, sizeof(wifi_state_machine[channel]));

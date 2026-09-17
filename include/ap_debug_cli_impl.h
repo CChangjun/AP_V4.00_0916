@@ -215,21 +215,27 @@ static void dbg_dump_pair_summary(bool show_all)
     const uint16_t plc_pair = EASYCAT.BufferOut.Cust.pairing_bit;
     const uint16_t ap_pair  = g_ap.data.rx_pairing_status;
     uint8_t shown = 0;
+    uint8_t active_request_count = 0;
+
+    for (uint8_t ch = 0; ch < AP_DBG_MAX_PEER; ch++)
+    {
+        if (wifi_send.request_timeout[ch].active) active_request_count++;
+    }
 
     Serial.printf("\r\n[DBG] pair summary%s\r\n", show_all ? " all" : "");
     Serial.printf("  plc_pair = 0x%04X\r\n", plc_pair);
     Serial.printf("  ap_pair  = 0x%04X\r\n", ap_pair);
-    Serial.printf("  rf_group=%u set_ch=%u get_ch=%u peer_req=%u\r\n",
+    Serial.printf("  rf_group=%u set_ch=%u get_ch=%u active_req=%u\r\n",
                     wifi_send.rf_set_group,
                     wifi_send.rf_set_channel,
                     wifi_send.rf_get_channel,
-                    wifi_send.peer_req ? 1 : 0);
+                    active_request_count);
 
     for (uint8_t ch = 0; ch < AP_DBG_MAX_PEER; ch++)
     {
         if (!show_all && !g_ap.peer.peer[ch].pairFlag) continue;
 
-        Serial.printf("  ch=%02u pair=%u type=0x%02X(%s) addr=0x%02X io_page=%u serial=%u rxBusy=%u txBusy=%u RSSI=%d\r\n",
+        Serial.printf("  ch=%02u pair=%u type=0x%02X(%s) addr=0x%02X io_page=%u serial=%u rxBusy=%u txBusy=%u req=%u tmo=%u/%u RSSI=%d\r\n",
                         ch,
                         g_ap.peer.peer[ch].pairFlag ? 1 : 0,
                         (uint8_t)(g_ap.peer.peer[ch].typeAddr >> 8),
@@ -239,6 +245,9 @@ static void dbg_dump_pair_summary(bool show_all)
                         g_ap.peer.peer[ch].serial,
                         wifi_send.rx_busy[ch] ? 1 : 0,
                         wifi_send.tx_busy[ch] ? 1 : 0,
+                        wifi_send.request_timeout[ch].active ? 1 : 0,
+                        (unsigned)wifi_send.request_timeout[ch].count,
+                        (unsigned)wifi_send.request_timeout[ch].limit,
                         g_ap.peer.rssi[ch]);
         shown++;
     }

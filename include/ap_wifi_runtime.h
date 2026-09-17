@@ -51,15 +51,22 @@ typedef struct _wifi_state_machine_t
 
 } wifi_state_machine_t;
 
+typedef struct _wifi_request_timeout_t
+{
+    bool active;                // 해당 채널에서 실제 송신 성공 후 응답을 기다리는 timeout 상태.
+    uint16_t count;             // Wifi_Handle()가 service된 횟수 기준 채널별 경과 count.
+    uint16_t limit;             // 요청 종류별 timeout 기준 count.
+} wifi_request_timeout_t;
+
 typedef struct _wifi_send_t
 {
     wifi_queue_t queue;         // ESP-NOW 전송 대기 peer channel FIFO.
 
     bool tx_busy[MAX_PEER];     // 채널별 송신 진행 중 flag.
     bool rx_busy[MAX_PEER];     // 송신 성공 후 채널별 응답 대기 flag.
+    wifi_request_timeout_t request_timeout[MAX_PEER]; // 채널별 request timeout 소유권/경과 상태.
 
     uint8_t peer_addr;          // 현재 round-robin 대상 peer channel.
-    bool peer_req;              // AP request cycle 활성 flag. 현재 구조에서는 한 번에 하나만 true.
 
     bool doing_recv_cb;         // Core 1 RX frame worker가 기존 packet 처리 본문을 실행 중인지 표시.
     bool doing_handle;          // Wifi_Handle() 실행 중인지 표시.
